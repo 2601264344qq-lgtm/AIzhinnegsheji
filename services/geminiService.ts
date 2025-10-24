@@ -1,22 +1,55 @@
-import { GoogleGenAI, Type } from "@google/genai";
-import type { UploadedFile, AnalysisData } from '../types';
+import { GoogleGenAI, Type, Part, Content } from "@google/genai";
+import type { UploadedFile, AnalysisData, ChatMessage } from '../types';
 
 // Fix: Initialize GoogleGenAI with API_KEY from environment variables directly as per guidelines.
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
+// Helper to convert app's message format to Gemini's format
+function buildHistory(history: ChatMessage[]): Content[] {
+    return history.map(msg => {
+        const parts: Part[] = [];
+        
+        // Add attachments if they exist, typically for user messages
+        if (msg.attachments) {
+            msg.attachments.forEach(file => {
+                parts.push({
+                    inlineData: {
+                        mimeType: file.type,
+                        data: file.base64
+                    }
+                });
+            });
+        }
+        
+        // Add text content
+        if (msg.content) {
+            parts.push({ text: msg.content });
+        }
+        
+        return {
+            role: msg.role === 'assistant' ? 'model' : 'user',
+            parts: parts
+        };
+    });
+}
+
+
 /**
- * Generates a text response from the Gemini model based on a prompt.
+ * Generates a streaming text response from the Gemini model based on a prompt and conversation history.
  */
-export async function generateResponse(prompt: string): Promise<string> {
+export async function* generateResponseStream(history: ChatMessage[], prompt: string): AsyncGenerator<string> {
     try {
-        const response = await ai.models.generateContent({
+        const fullHistory = buildHistory(history);
+        const response = await ai.models.generateContentStream({
             model: 'gemini-2.5-flash',
-            contents: [{ parts: [{ text: prompt }] }],
+            contents: [...fullHistory, { role: 'user', parts: [{ text: prompt }] }],
             config: {
                 systemInstruction: `你是小顾，一个专业的机械设计AI助手。你具备深厚的机械工程知识，包括机械设计原理、强度分析、材料选择、零件设计（齿轮、轴、轴承等）、工程计算、参数优化、结构分析、CAD设计、制造工艺和质量控制。请用专业、友好的语气回答用户的机械设计问题。回答要准确专业，结构清晰，使用markdown格式。`
             }
         });
-        return response.text;
+        for await (const chunk of response) {
+            yield chunk.text;
+        }
     } catch (error) {
         console.error("Gemini API call failed:", error);
         throw new Error("Failed to get response from AI model.");
@@ -24,10 +57,10 @@ export async function generateResponse(prompt: string): Promise<string> {
 }
 
 /**
- * Analyzes uploaded files (images) along with a text prompt.
+ * Analyzes uploaded files (images) along with a text prompt and conversation history.
  * Simulates data extraction and returns both a text response and structured data.
  */
-export async function analyzeFileContent(prompt: string, files: UploadedFile[]): Promise<{ text: string, analysisData: AnalysisData | null }> {
+export async function analyzeFileContent(history: ChatMessage[], prompt: string, files: UploadedFile[]): Promise<{ text: string, analysisData: AnalysisData | null }> {
     const imageParts = files
         .filter(file => file.type.startsWith('image/'))
         .map(file => ({
@@ -59,11 +92,13 @@ export async function analyzeFileContent(prompt: string, files: UploadedFile[]):
         required: ["partType", "materialType", "outerDia", "innerDia", "length", "stressMax", "deformationMax", "utilization", "summary"]
     };
 
+    const fullHistory = buildHistory(history);
+    const userParts: Part[] = [...imageParts, { text: analysisPrompt }];
 
     try {
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
-            contents: [{ parts: [...imageParts, { text: analysisPrompt }] }],
+            contents: [...fullHistory, { role: 'user', parts: userParts }],
             // Fix: Added config for JSON mode.
             config: {
                 responseMimeType: 'application/json',

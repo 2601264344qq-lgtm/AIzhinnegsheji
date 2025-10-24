@@ -1,10 +1,12 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import type { ChatMessage, UploadedFile, AnalysisData } from '../../types';
 import { SendIcon, PlusIcon, PaperclipIcon, XIcon, FileIcon, ImageIcon } from '../icons/Icons';
-import { generateResponse, analyzeFileContent } from '../../services/geminiService';
+import { generateResponseStream, analyzeFileContent } from '../../services/geminiService';
 
 interface ChatPageProps {
     onAnalysisComplete: (data: AnalysisData) => void;
+    messages: ChatMessage[];
+    setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
 }
 
 const WelcomeScreen: React.FC<{ onPromptClick: (prompt: string) => void }> = ({ onPromptClick }) => (
@@ -27,8 +29,7 @@ const PromptCard: React.FC<{ title: string, text: string, onClick: () => void }>
     </div>
 );
 
-const ChatPage: React.FC<ChatPageProps> = ({ onAnalysisComplete }) => {
-    const [messages, setMessages] = useState<ChatMessage[]>([]);
+const ChatPage: React.FC<ChatPageProps> = ({ onAnalysisComplete, messages, setMessages }) => {
     const [userInput, setUserInput] = useState('');
     const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
     const [isLoading, setIsLoading] = useState(false);
@@ -40,7 +41,6 @@ const ChatPage: React.FC<ChatPageProps> = ({ onAnalysisComplete }) => {
     }, [messages]);
     
     const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-        // Fix: Explicitly type `files` as `File[]` to resolve errors where properties on `file` were not found.
         const files: File[] = Array.from(event.target.files || []);
         if (files.length === 0) return;
 
@@ -60,12 +60,14 @@ const ChatPage: React.FC<ChatPageProps> = ({ onAnalysisComplete }) => {
             setUploadedFiles(prev => [...prev, ...newFiles]);
         });
         
-        if(event.target) event.target.value = ''; // Allow re-uploading same file
+        if(event.target) event.target.value = '';
     };
 
     const handleSendMessage = useCallback(async () => {
         const trimmedInput = userInput.trim();
         if ((!trimmedInput && uploadedFiles.length === 0) || isLoading) return;
+
+        const history = [...messages];
 
         const userMessage: ChatMessage = {
             id: Date.now().toString(),
@@ -76,39 +78,75 @@ const ChatPage: React.FC<ChatPageProps> = ({ onAnalysisComplete }) => {
         setMessages(prev => [...prev, userMessage]);
         setUserInput('');
         setUploadedFiles([]);
-        setIsLoading(true);
 
-        try {
-            let responseContent = '';
-            if (uploadedFiles.length > 0) {
-                const result = await analyzeFileContent(trimmedInput, uploadedFiles);
-                responseContent = result.text;
+        if (uploadedFiles.length > 0) {
+            setIsLoading(true);
+            try {
+                const result = await analyzeFileContent(history, trimmedInput, uploadedFiles);
+                let responseContent = result.text;
                 if (result.analysisData) {
                     onAnalysisComplete(result.analysisData);
                     responseContent += `\n\n💡 分析数据已同步到参数优化、结果可视化和报告生成页面。`;
                 }
-            } else {
-                responseContent = await generateResponse(trimmedInput);
+                const assistantMessage: ChatMessage = {
+                    id: (Date.now() + 1).toString(),
+                    role: 'assistant',
+                    content: responseContent,
+                };
+                setMessages(prev => [...prev, assistantMessage]);
+            } catch (error) {
+                console.error(error);
+                const errorMessage: ChatMessage = {
+                    id: (Date.now() + 1).toString(),
+                    role: 'assistant',
+                    content: '抱歉，我遇到了一些问题，请稍后再试。',
+                };
+                setMessages(prev => [...prev, errorMessage]);
+            } finally {
+                setIsLoading(false);
             }
-            
-            const assistantMessage: ChatMessage = {
-                id: (Date.now() + 1).toString(),
-                role: 'assistant',
-                content: responseContent,
-            };
-            setMessages(prev => [...prev, assistantMessage]);
-        } catch (error) {
-            console.error(error);
-            const errorMessage: ChatMessage = {
-                id: (Date.now() + 1).toString(),
-                role: 'assistant',
-                content: '抱歉，我遇到了一些问题，请稍后再试。',
-            };
-            setMessages(prev => [...prev, errorMessage]);
-        } finally {
-            setIsLoading(false);
+        } else {
+            setIsLoading(true);
+            let assistantMessageId = '';
+            let messageCreated = false;
+
+            try {
+                const stream = generateResponseStream(history, trimmedInput);
+                for await (const chunk of stream) {
+                    if (!messageCreated) {
+                        setIsLoading(false);
+                        assistantMessageId = (Date.now() + 1).toString();
+                        setMessages(prev => [...prev, { id: assistantMessageId, role: 'assistant', content: '' }]);
+                        messageCreated = true;
+                    }
+
+                    for (const char of chunk) {
+                        setMessages(prev =>
+                            prev.map(msg =>
+                                msg.id === assistantMessageId
+                                    ? { ...msg, content: msg.content + char }
+                                    : msg
+                            )
+                        );
+                        await new Promise(resolve => setTimeout(resolve, 15));
+                    }
+                }
+
+                if (!messageCreated) {
+                    setIsLoading(false);
+                }
+            } catch (error) {
+                console.error(error);
+                setIsLoading(false);
+                const errorMessage: ChatMessage = {
+                    id: (Date.now() + 1).toString(),
+                    role: 'assistant',
+                    content: '抱歉，我遇到了一些问题，请稍后再试。',
+                };
+                setMessages(prev => [...prev, errorMessage]);
+            }
         }
-    }, [userInput, uploadedFiles, isLoading, onAnalysisComplete]);
+    }, [userInput, uploadedFiles, isLoading, onAnalysisComplete, messages, setMessages]);
 
     const handlePromptClick = (prompt: string) => {
         setUserInput(prompt);

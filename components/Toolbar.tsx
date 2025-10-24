@@ -3,9 +3,10 @@ import { MenuIcon, Trash2Icon } from './icons/Icons';
 
 interface ToolbarProps {
     onToggleSidebar: () => void;
+    onClearChat: () => void;
 }
 
-const Toolbar: React.FC<ToolbarProps> = ({ onToggleSidebar }) => {
+const Toolbar: React.FC<ToolbarProps> = ({ onToggleSidebar, onClearChat }) => {
     return (
         <header className="flex-shrink-0 bg-slate-900/70 backdrop-blur-lg border-b border-violet-500/30 px-5 py-3 flex justify-between items-center">
             <div className="flex items-center gap-3">
@@ -28,7 +29,7 @@ const Toolbar: React.FC<ToolbarProps> = ({ onToggleSidebar }) => {
                 </div>
             </div>
             <div className="hidden md:flex">
-                <button className="flex items-center gap-2 px-4 py-2 bg-transparent border border-violet-500/30 text-gray-400 rounded-lg text-sm hover:bg-violet-500/20 hover:text-violet-200 transition-colors">
+                <button onClick={onClearChat} className="flex items-center gap-2 px-4 py-2 bg-transparent border border-violet-500/30 text-gray-400 rounded-lg text-sm hover:bg-violet-500/20 hover:text-violet-200 transition-colors">
                     <Trash2Icon className="w-4 h-4" />
                     清除对话
                 </button>
